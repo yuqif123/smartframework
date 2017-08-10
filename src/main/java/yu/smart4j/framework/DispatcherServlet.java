@@ -9,6 +9,7 @@ import yu.smart4j.framework.bean.View;
 import yu.smart4j.framework.helper.BeanHelper;
 import yu.smart4j.framework.helper.ConfigHelper;
 import yu.smart4j.framework.helper.ControllerHelper;
+import yu.smart4j.framework.helper.ServletHelper;
 import yu.smart4j.framework.util.CodecUtil;
 import yu.smart4j.framework.util.JsonUtil;
 import yu.smart4j.framework.util.ReflectionUtil;
@@ -56,73 +57,92 @@ public class DispatcherServlet extends HttpServlet{
 
     @Override
     protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        //获取请求方法与请求路径
-        String requestMethod = req.getMethod().toLowerCase();//注意这里是返回请求方式get/post/put等
-        String requestPath = req.getPathInfo();//该方法实际返回对应servlet中的子路径部分，但不包括参数信息
-        //获取Action处理器
-        Handler handler = ControllerHelper.getHandler(requestMethod, requestPath);
-        if (handler != null) {
-            //获取Controller类及其Bean实例
-            Class<?> controllerClass = handler.getControllerClass();
-            Object controllerBean = BeanHelper.getBean(controllerClass);
-            //创建请求参数对象
-            Map<String,Object> paramMap = new HashMap<String,Object>();
-            //encType非multipart/form-data的可以用该方法解析参数
-            Enumeration<String> paramNames = req.getParameterNames();
-            while (paramNames.hasMoreElements()) {
-                String paramName = paramNames.nextElement();
-                String paramValue = req.getParameter(paramName);
-                paramMap.put(paramName, paramValue);
-            }
-            //encType为multipart/form-data时就要去解析流了
-            String body = CodecUtil.decodeURL(StreamUtil.getString(req.getInputStream()));
-            if (StringUtils.isNotEmpty(body)) {
-                String[] params = StringUtils.split(body, "&");
-                if (ArrayUtils.isNotEmpty(params)) {
-                    for (String param : params) {
-                        String[] array = StringUtils.split(param, "=");
-                        if (ArrayUtils.isNotEmpty(array) && array.length == 2) {
-                            String paramName = array[0];
-                            String paramValue = array[1];
-                            paramMap.put(paramName, paramValue);
+        ServletHelper.init(req,resp);
+        try {
+            //获取请求方法与请求路径
+            String requestMethod = req.getMethod().toLowerCase();//注意这里是返回请求方式get/post/put等
+            String requestPath = req.getPathInfo();//该方法实际返回对应servlet中的子路径部分，但不包括参数信息
+            //获取Action处理器
+            Handler handler = ControllerHelper.getHandler(requestMethod, requestPath);
+            if (handler != null) {
+                //获取Controller类及其Bean实例
+                Class<?> controllerClass = handler.getControllerClass();
+                Object controllerBean = BeanHelper.getBean(controllerClass);
+                //创建请求参数对象
+                Map<String, Object> paramMap = new HashMap<String, Object>();
+                //encType非multipart/form-data的可以用该方法解析参数
+                Enumeration<String> paramNames = req.getParameterNames();
+                while (paramNames.hasMoreElements()) {
+                    String paramName = paramNames.nextElement();
+                    String paramValue = req.getParameter(paramName);
+                    paramMap.put(paramName, paramValue);
+                }
+                //encType为multipart/form-data时就要去解析流了
+                String body = CodecUtil.decodeURL(StreamUtil.getString(req.getInputStream()));
+                if (StringUtils.isNotEmpty(body)) {
+                    String[] params = StringUtils.split(body, "&");
+                    if (ArrayUtils.isNotEmpty(params)) {
+                        for (String param : params) {
+                            String[] array = StringUtils.split(param, "=");
+                            if (ArrayUtils.isNotEmpty(array) && array.length == 2) {
+                                String paramName = array[0];
+                                String paramValue = array[1];
+                                paramMap.put(paramName, paramValue);
+                            }
                         }
                     }
                 }
-            }
-            Param param = new Param(paramMap);
-            //调用Action方法
-            Method actionMethod = handler.getActionMethod();
-            Object result = ReflectionUtil.invokeMethod(controllerBean, actionMethod, param);
-            //处理Action方法返回值
-            if (result instanceof View) {
-                //返回JSP页面
-                View view = (View)result;
-                String path = view.getPath();
-                if (StringUtils.isNotEmpty(path)) {
-                    if (path.startsWith("/")) {
-                        resp.sendRedirect(req.getContextPath() + path);
-                    } else {
-                        Map<String,Object> model = view.getModel();
-                        for (Map.Entry<String, Object> entry : model.entrySet()) {
-                            req.setAttribute(entry.getKey(),entry.getValue());
-                        }
-                        req.getRequestDispatcher(ConfigHelper.getAppJspPath() + path).forward(req, resp);
-                    }
+                Param param = new Param(paramMap);
+                //调用Action方法
+                Method actionMethod = handler.getActionMethod();
+                Object result;
+                if (param.isEmpty()) {
+                    result = ReflectionUtil.invokeMethod(controllerBean, actionMethod);
+                } else {
+                    result = ReflectionUtil.invokeMethod(controllerBean, actionMethod, param);
                 }
-            } else if (result instanceof Data) {
-                //返回JSON数据
-                Data data = (Data) result;
-                Object model = data.getModel();
-                if (model != null) {
-                    resp.setContentType("application/json");
-                    resp.setCharacterEncoding("UTF-8");
-                    PrintWriter writer = resp.getWriter();
-                    String json = JsonUtil.toJson(model);
-                    writer.write(json);
-                    writer.flush();
-                    writer.close();
+                //处理Action方法返回值
+                if (result instanceof View) {
+                    //返回JSP页面
+                    handleViewResult((View) result, req, resp);
+                } else if (result instanceof Data) {
+                    //返回JSON数据
+                    handleDataResult((Data) result, req, resp);
                 }
             }
+        } finally {
+            ServletHelper.destroy();
+        }
+    }
+
+    private void handleViewResult(View view, HttpServletRequest request,
+                                  HttpServletResponse response) throws IOException, ServletException {
+
+        String path = view.getPath();
+        if (StringUtils.isNotEmpty(path)) {
+            if (path.startsWith("/")) {
+                response.sendRedirect(request.getContextPath() + path);
+            } else {
+                Map<String,Object> model = view.getModel();
+                for (Map.Entry<String, Object> entry : model.entrySet()) {
+                    request.setAttribute(entry.getKey(), entry.getValue());
+                }
+                request.getRequestDispatcher(ConfigHelper.getAppAssetPath() + path).forward(request, response);
+            }
+
+        }
+    }
+
+    private void handleDataResult(Data data, HttpServletRequest request, HttpServletResponse response) throws IOException {
+        Object model = data.getModel();
+        if (model != null) {
+            response.setContentType("application/json");
+            response.setCharacterEncoding("UTF-8");
+            PrintWriter writer = response.getWriter();
+            String json = JsonUtil.toJson(model);
+            writer.write(json);
+            writer.flush();
+            writer.close();
         }
     }
 }

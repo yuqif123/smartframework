@@ -1,6 +1,7 @@
 package yu.smart4j.framework.bean;
 
 import yu.smart4j.framework.util.CastUtil;
+import yu.smart4j.framework.util.CollectionUtil;
 
 import java.util.Map;
 
@@ -30,4 +31,7 @@ public class Param {
         return paramMap;
     }
 
+    public boolean isEmpty() {
+        return CollectionUtil.isEmpty(paramMap);
+    }
 }
